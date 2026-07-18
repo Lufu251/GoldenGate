@@ -1,0 +1,22 @@
+# Firewall inventory -- example.
+#
+# Copy this file to inventory.yaml and fill in your firewalls:
+#
+#     cp inventory.yaml.example inventory.yaml
+#
+# inventory.yaml is gitignored because it holds live REST API tokens -- keep it
+# secret. This example carries only placeholders and is safe to commit.
+#
+# The file is a YAML list; each entry describes one FortiGate:
+#
+#   name     (required) friendly identifier, e.g. "fw1".
+#   address  (required) host or IP to connect to.
+#   token    (required) REST API token.
+#   port     (optional) HTTPS port. Default: 443.
+#   verify   (optional) TLS verification: true/false, or a path to a CA bundle. Default: true. Use false only for self-signed lab units.
+
+- name: fw1
+  address: fw1.example.internal
+  token: REPLACE_WITH_YOUR_API_TOKEN
+  port: 443
+  verify: false

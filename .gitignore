@@ -1,0 +1,14 @@
+# Secrets
+inventory.yaml
+
+# Exported firewall configuration -- both the raw API JSON and the
+# normalized YAML. Generated, and contains secrets (hashed admin
+# passwords, VPN pre-shared keys, certificates) straight from the
+# appliance, so it stays out of version control.
+data/
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
