@@ -7,6 +7,8 @@ inventory.yaml
 # appliance, so it stays out of version control.
 data/
 
+plans/
+
 __pycache__/
 *.pyc
 .venv/

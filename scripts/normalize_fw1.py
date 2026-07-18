@@ -5,7 +5,7 @@ Run from the repo root::
 
     python3 scripts/normalize_fw1.py
 
-Reads ``data/raw/fw1/<vdom>/*.json`` and writes ``data/normal/fw1.yaml``.
+Reads ``data/raw/fw1/<scope>/*.json`` and writes ``data/normal/fw1.yaml``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fortigate.normalizer import host_file_path, normalize_host, write_normalized
+from fortigate.config.normalizer import host_file_path, normalize_host, write_normalized
 
 HOST_NAME = "fw1"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -28,9 +28,15 @@ def main() -> int:
     file_path = host_file_path(OUTPUT_DIR, HOST_NAME)
     write_normalized(file_path, host)
 
-    sections = sum(len(sections) for sections in host.vdoms.values())
+    sections = len(host.global_config) + sum(
+        len(sections) for sections in host.vdoms.values()
+    )
     print(f"wrote {file_path}")
-    print(f"{len(host.vdoms)} vdom(s), {sections} section(s)")
+    print(
+        f"{len(host.vdoms)} vdom(s) + global, {sections} section(s)"
+        if host.global_config
+        else f"{len(host.vdoms)} vdom(s), {sections} section(s)"
+    )
     return 0
 
 

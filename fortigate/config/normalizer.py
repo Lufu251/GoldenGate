@@ -1,6 +1,6 @@
 """Turn raw cmdb JSON exports into one diff-friendly YAML file per firewall.
 
-The API responses written by :mod:`fortigate.config_exporter` are faithful
+The API responses written by :mod:`fortigate.config.exporter` are faithful
 but hostile to comparison: every object carries a ``q_origin_key`` duplicate
 of its own identity, tables come back as lists (so inserting one policy
 shifts every following line of a diff), and per-request metadata like
@@ -10,12 +10,20 @@ This module rewrites that into a single mapping per host::
 
     host: fw1
     version: v7.4.12
+    global:
+      system/ntp:
+        ntpsync: enable
     vdoms:
       root:
         firewall/policy:
           4:
             name: wan-dmz-rproxy
             srcintf: [wan1]
+
+``global`` mirrors the appliance's own split in multi-VDOM mode: config
+that exists once for the whole box rather than per-VDOM. It is a sibling
+of ``vdoms`` rather than an entry inside it, so consumers iterating VDOMs
+do not mistake it for one.
 
 Tables become mappings keyed by their mkey, so a diff stays local to the
 object that actually changed. Ordering within a table is whatever the API
@@ -32,6 +40,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from .sections import GLOBAL_SCOPE
+
 __all__ = [
     "HostFacts",
     "NormalizedHost",
@@ -40,7 +50,7 @@ __all__ = [
     "infer_mkey",
     "normalize_value",
     "normalize_section",
-    "discover_vdom_dirs",
+    "discover_scope_dirs",
     "normalize_host",
     "host_file_path",
     "write_normalized",
@@ -71,6 +81,9 @@ class NormalizedHost:
 
     host: str
     facts: HostFacts = field(default_factory=HostFacts)
+    #: Whole-appliance config. Named ``global_config`` because ``global``
+    #: is a reserved word; it is written out under the key ``global``.
+    global_config: Dict[str, Any] = field(default_factory=dict)
     vdoms: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def to_mapping(self) -> Dict[str, Any]:
@@ -80,6 +93,10 @@ class NormalizedHost:
             value = getattr(self.facts, name)
             if value is not None:
                 mapping[name] = value
+        # Omitted entirely when nothing global was exported, so a
+        # single-VDOM host's file keeps its previous shape.
+        if self.global_config:
+            mapping["global"] = self.global_config
         mapping["vdoms"] = self.vdoms
         return mapping
 
@@ -177,8 +194,13 @@ def normalize_section(payload: Any) -> Any:
     return normalize_value(results)
 
 
-def discover_vdom_dirs(host_dir: Path) -> List[Path]:
-    """Return the VDOM directories actually present under ``host_dir``."""
+def discover_scope_dirs(host_dir: Path) -> List[Path]:
+    """Return the scope directories present under ``host_dir``.
+
+    These are one per VDOM plus, when global sections were exported, the
+    :data:`GLOBAL_SCOPE` directory. Telling them apart is left to
+    :func:`normalize_host`.
+    """
     if not host_dir.is_dir():
         return []
     return sorted(child for child in host_dir.iterdir() if child.is_dir())
@@ -187,22 +209,25 @@ def discover_vdom_dirs(host_dir: Path) -> List[Path]:
 def normalize_host(raw_dir: Path, host_name: str) -> NormalizedHost:
     """Normalize every exported section for one firewall.
 
-    VDOMs and sections are read from whatever is on disk rather than from a
+    Scopes and sections are read from whatever is on disk rather than from a
     caller-supplied list, so this stays correct as the export grows.
     """
     host_dir = Path(raw_dir) / host_name
     result = NormalizedHost(host=host_name)
 
-    for vdom_dir in discover_vdom_dirs(host_dir):
+    for scope_dir in discover_scope_dirs(host_dir):
         sections: Dict[str, Any] = {}
-        for json_file in sorted(vdom_dir.glob("*.json")):
+        for json_file in sorted(scope_dir.glob("*.json")):
             payload = json.loads(json_file.read_text())
             if result.facts == HostFacts():
                 result.facts = extract_facts(payload)
             sections[section_path_from_filename(json_file.name)] = normalize_section(
                 payload
             )
-        result.vdoms[vdom_dir.name] = sections
+        if scope_dir.name == GLOBAL_SCOPE:
+            result.global_config = sections
+        else:
+            result.vdoms[scope_dir.name] = sections
 
     return result
 

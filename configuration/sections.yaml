@@ -1,0 +1,25 @@
+# Which config sections to export, and the scope each one lives in.
+#
+# In multi-VDOM mode a FortiGate splits its config in two:
+#
+#   global  config that exists once for the whole appliance. Exported once,
+#           into data/raw/<host>/global/.
+#   vdom    config that exists separately in each VDOM. Exported once per
+#           VDOM discovered on the appliance, into data/raw/<host>/<vdom>/.
+#
+# Which scope a path belongs to is a property of the FortiOS data model, not
+# of your appliance -- it cannot be discovered over the API, so it is
+# declared here. It does shift between FortiOS versions, so revisit this
+# file when adding sections or after a firmware upgrade.
+#
+# Note that some paths exist in BOTH scopes with different meanings: the
+# per-VDOM counterpart of system/global is system/settings, not system/global
+# itself. Declaring the same path under both scopes is an error.
+
+global:
+  - cmdb/system/global
+  - cmdb/system/ntp
+
+vdom:
+  - cmdb/firewall/address
+  - cmdb/firewall/policy

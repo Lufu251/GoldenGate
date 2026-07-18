@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Showcase: export a handful of config sections from fw1.
+"""Showcase: export fw1's declared config sections.
 
-Run from the repo root::
+Run from anywhere::
 
     python3 scripts/export_fw1.py
 
-Writes JSON files under ``data/hosts/fw1/<vdom>/<section>.json``.
+Which sections to fetch, and the scope each lives in, is declared in
+``configuration/sections.yaml``.
+
+Writes JSON files under ``data/raw/fw1/<scope>/<section>.json``, where
+``<scope>`` is ``global`` or a VDOM name.
 """
 
 from __future__ import annotations
@@ -16,20 +20,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fortigate.client import FortiGateClient
-from fortigate.config_exporter import export_sections
-from fortigate.inventory import get_entry
+from fortigate.api.client import FortiGateClient
+from fortigate.api.inventory import get_entry
+from fortigate.config.exporter import export_sections
+from fortigate.config.sections import load_sections
 
 logger = logging.getLogger(__name__)
 
 HOST_NAME = "fw1"
-OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
-SECTIONS = [
-    "cmdb/system/global",
-    "cmdb/system/ntp",
-    "cmdb/firewall/address",
-    "cmdb/firewall/policy",
-]
+REPO_ROOT = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = REPO_ROOT / "data" / "raw"
+SECTIONS_FILE = REPO_ROOT / "configuration" / "sections.yaml"
 
 
 def main() -> int:
@@ -38,8 +39,15 @@ def main() -> int:
     )
 
     entry = get_entry(HOST_NAME)
+    sections = load_sections(SECTIONS_FILE)
     with FortiGateClient.from_entry(entry) as fg:
-        result = export_sections(fg, SECTIONS, OUTPUT_DIR, HOST_NAME)
+        result = export_sections(
+            fg,
+            sections.vdom_paths,
+            OUTPUT_DIR,
+            HOST_NAME,
+            global_paths=sections.global_paths,
+        )
 
     for written in result.written:
         print(f"wrote  {written.vdom}/{written.path} -> {written.file_path}")

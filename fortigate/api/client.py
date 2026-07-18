@@ -2,18 +2,18 @@
 
 Authentication uses an API token (Bearer). Create a REST API admin on the
 FortiGate, generate a token, and add an entry for it to ``inventory.yaml``
-(see :mod:`fortigate.inventory`).
+(see :mod:`fortigate.api.inventory`).
 
 This module holds the raw :class:`FortiGateClient` and the
 :class:`FortiGateAPIError` it raises -- nothing more than a typed way to
 speak HTTP to the appliance. Helpers that discover how a particular
 appliance is laid out and read config out of it are a separate layer built
-on top of it, in :mod:`fortigate.config_exporter`.
+on top of it, in :mod:`fortigate.config.exporter`.
 
 Run this module directly to perform a proof-of-connection call against the
 first firewall in the inventory::
 
-    python -m fortigate.client
+    python -m fortigate.api.client
 """
 
 from __future__ import annotations
@@ -132,7 +132,7 @@ class FortiGateClient:
         timeout: float = 10.0,
         retries: int = 3,
     ) -> "FortiGateClient":
-        """Build a client from an :class:`~fortigate.inventory.FirewallEntry`.
+        """Build a client from an :class:`~fortigate.api.inventory.FirewallEntry`.
 
         VDOM is deliberately not part of a :class:`FirewallEntry` -- it's
         appliance state, discovered per call and passed explicitly on

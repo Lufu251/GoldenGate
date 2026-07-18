@@ -1,9 +1,18 @@
 """Fetch FortiGate cmdb config sections and write them out as JSON.
 
-Built on top of :class:`fortigate.client.FortiGateClient`: given a list of
+Built on top of :class:`fortigate.api.client.FortiGateClient`: given lists of
 cmdb paths (e.g. ``"cmdb/firewall/policy"``), this discovers every VDOM on
-the appliance, fetches each path in each VDOM, and writes the full API
-response envelope as pretty-printed JSON under an output directory.
+the appliance, fetches each path in the scope it actually lives in, and
+writes the full API response envelope as pretty-printed JSON under an
+output directory.
+
+In multi-VDOM mode a FortiGate splits its config into two scopes. Most
+tables (``firewall/*``, ``router/*``, ``system/settings``) are per-VDOM,
+but some (``system/global``, ``system/ntp``) live once in the *global*
+scope and are reached with a ``global=1`` query parameter instead of a
+``vdom=`` one. Which paths belong to which scope is FortiOS schema
+knowledge that cannot be discovered from the appliance, so the caller
+declares it by passing ``global_paths`` separately from ``vdom_paths``.
 
 A single section failing to fetch (e.g. unsupported on this model/version)
 does not abort the rest of the export -- see :func:`export_sections`.
@@ -16,7 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-from .client import FortiGateAPIError, FortiGateClient
+from ..api.client import FortiGateAPIError, FortiGateClient
+from .sections import GLOBAL_SCOPE
 
 __all__ = [
     "SectionFetchResult",
@@ -83,19 +93,35 @@ def discover_vdoms(client: FortiGateClient) -> List[str]:
     return [item["name"] for item in results if isinstance(item, dict) and "name" in item]
 
 
-def build_export_plan(vdoms: List[str], paths: List[str]) -> List[Tuple[str, str]]:
-    """Pair every path with every VDOM, in VDOM-major order."""
-    return [(vdom, path) for vdom in vdoms for path in paths]
+def build_export_plan(
+    vdoms: List[str],
+    vdom_paths: List[str],
+    global_paths: Optional[List[str]] = None,
+) -> List[Tuple[str, str]]:
+    """Pair each path with the scope it lives in.
+
+    Global paths are emitted once under :data:`GLOBAL_SCOPE`; VDOM paths are
+    crossed with every VDOM, in VDOM-major order.
+    """
+    plan = [(GLOBAL_SCOPE, path) for path in (global_paths or [])]
+    plan += [(vdom, path) for vdom in vdoms for path in vdom_paths]
+    return plan
 
 
 def fetch_section(client: FortiGateClient, vdom: str, path: str) -> SectionFetchResult:
-    """Fetch one cmdb path in one VDOM, never raising.
+    """Fetch one cmdb path in one scope, never raising.
 
-    :raises: never -- a :class:`~fortigate.client.FortiGateAPIError` is
+    ``vdom`` is either a real VDOM name or :data:`GLOBAL_SCOPE`, in which
+    case the path is read from the global scope instead.
+
+    :raises: never -- a :class:`~fortigate.api.client.FortiGateAPIError` is
         caught and returned as ``SectionFetchResult.error`` instead.
     """
     try:
-        data = client.get(path, vdom=vdom)
+        if vdom == GLOBAL_SCOPE:
+            data = client.get(path, params={"global": "1"})
+        else:
+            data = client.get(path, vdom=vdom)
     except FortiGateAPIError as exc:
         return SectionFetchResult(vdom=vdom, path=path, error=str(exc))
     return SectionFetchResult(vdom=vdom, path=path, data=data)
@@ -104,8 +130,11 @@ def fetch_section(client: FortiGateClient, vdom: str, path: str) -> SectionFetch
 def section_file_path(output_dir: Path, host_name: str, vdom: str, path: str) -> Path:
     """Compute where a fetched section should be written.
 
-    Example: ``section_file_path(Path("data/hosts"), "fw1", "root",
-    "cmdb/firewall/address")`` -> ``data/hosts/fw1/root/firewall-address.json``.
+    Example: ``section_file_path(Path("data/raw"), "fw1", "root",
+    "cmdb/firewall/address")`` -> ``data/raw/fw1/root/cmdb-firewall-address.json``.
+
+    Global sections land in a sibling ``global/`` directory, since
+    :data:`GLOBAL_SCOPE` is passed as ``vdom``.
     """
     filename = path.strip("/").replace("/", "-") + ".json"
     return Path(output_dir) / host_name / vdom / filename
@@ -119,19 +148,22 @@ def write_section(file_path: Path, data: Any) -> None:
 
 def export_sections(
     client: FortiGateClient,
-    paths: List[str],
+    vdom_paths: List[str],
     output_dir: Path,
     host_name: str,
+    global_paths: Optional[List[str]] = None,
 ) -> ExportResult:
-    """Fetch ``paths`` across every VDOM on the appliance and write each to disk.
+    """Fetch every path in its own scope and write each result to disk.
+
+    ``vdom_paths`` are fetched once per discovered VDOM; ``global_paths``
+    are fetched once from the appliance's global scope.
 
     A section failing to fetch is recorded in the returned
     :class:`ExportResult` rather than raising -- the rest of the export
     still proceeds.
     """
     vdoms = discover_vdoms(client)
-    print(vdoms)
-    plan = build_export_plan(vdoms, paths)
+    plan = build_export_plan(vdoms, vdom_paths, global_paths)
 
     written: List[WrittenSection] = []
     failures: List[FailedSection] = []
