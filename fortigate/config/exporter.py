@@ -1,9 +1,10 @@
 """Fetch FortiGate cmdb config sections and write them out as JSON.
 
-Built on top of :class:`fortigate.api.client.FortiGateClient`: given lists of
-cmdb paths (e.g. ``"cmdb/firewall/policy"``), this discovers every VDOM on
-the appliance, fetches each path in the scope it actually lives in, and
-writes the full API response envelope as pretty-printed JSON under an
+Built on top of :class:`fortigate.api.client.FortiGateClient`: given
+:class:`~fortigate.config.sections.Section` values (a cmdb path such as
+``"cmdb/firewall/policy"`` plus the scope it lives in), this discovers every
+VDOM on the appliance, fetches each path in the scope it actually lives in,
+and writes the full API response envelope as pretty-printed JSON under an
 output directory.
 
 In multi-VDOM mode a FortiGate splits its config into two scopes. Most
@@ -12,7 +13,9 @@ but some (``system/global``, ``system/ntp``) live once in the *global*
 scope and are reached with a ``global=1`` query parameter instead of a
 ``vdom=`` one. Which paths belong to which scope is FortiOS schema
 knowledge that cannot be discovered from the appliance, so the caller
-declares it by passing ``global_paths`` separately from ``vdom_paths``.
+declares it by tagging each section with its scope. What that means for
+fetching -- global once, per-VDOM once per VDOM -- is this module's
+business, and :func:`build_export_plan` is where it happens.
 
 A single section failing to fetch (e.g. unsupported on this model/version)
 does not abort the rest of the export -- see :func:`export_sections`.
@@ -23,10 +26,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from ..api.client import FortiGateAPIError, FortiGateClient
-from .sections import GLOBAL_SCOPE
+from .sections import GLOBAL_SCOPE, VDOM_SCOPE, Section
 
 __all__ = [
     "SectionFetchResult",
@@ -95,16 +98,18 @@ def discover_vdoms(client: FortiGateClient) -> List[str]:
 
 def build_export_plan(
     vdoms: List[str],
-    vdom_paths: List[str],
-    global_paths: Optional[List[str]] = None,
+    sections: Iterable[Section],
 ) -> List[Tuple[str, str]]:
-    """Pair each path with the scope it lives in.
+    """Pair each section's path with the scope it should be fetched in.
 
-    Global paths are emitted once under :data:`GLOBAL_SCOPE`; VDOM paths are
-    crossed with every VDOM, in VDOM-major order.
+    Global sections are emitted once under :data:`GLOBAL_SCOPE`; VDOM
+    sections are crossed with every VDOM, in VDOM-major order.
     """
-    plan = [(GLOBAL_SCOPE, path) for path in (global_paths or [])]
-    plan += [(vdom, path) for vdom in vdoms for path in vdom_paths]
+    sections = list(sections)  # may be a one-shot iterable; walked twice below
+    plan = [(GLOBAL_SCOPE, s.path) for s in sections if s.scope == GLOBAL_SCOPE]
+    plan += [
+        (vdom, s.path) for vdom in vdoms for s in sections if s.scope == VDOM_SCOPE
+    ]
     return plan
 
 
@@ -148,22 +153,22 @@ def write_section(file_path: Path, data: Any) -> None:
 
 def export_sections(
     client: FortiGateClient,
-    vdom_paths: List[str],
+    sections: Iterable[Section],
     output_dir: Path,
     host_name: str,
-    global_paths: Optional[List[str]] = None,
 ) -> ExportResult:
-    """Fetch every path in its own scope and write each result to disk.
+    """Fetch every section in its own scope and write each result to disk.
 
-    ``vdom_paths`` are fetched once per discovered VDOM; ``global_paths``
-    are fetched once from the appliance's global scope.
+    Sections scoped to :data:`VDOM_SCOPE` are fetched once per discovered
+    VDOM; those scoped to :data:`GLOBAL_SCOPE` are fetched once from the
+    appliance's global scope.
 
     A section failing to fetch is recorded in the returned
     :class:`ExportResult` rather than raising -- the rest of the export
     still proceeds.
     """
     vdoms = discover_vdoms(client)
-    plan = build_export_plan(vdoms, vdom_paths, global_paths)
+    plan = build_export_plan(vdoms, sections)
 
     written: List[WrittenSection] = []
     failures: List[FailedSection] = []

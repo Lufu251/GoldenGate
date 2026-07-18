@@ -140,8 +140,8 @@ class FortiGateClient:
 
         Example::
 
-            entries = load_inventory()
-            with FortiGateClient.from_entry(entries[0]) as fg:
+            entry = Inventory.load().get("fw1")
+            with FortiGateClient.from_entry(entry) as fg:
                 ...
         """
         return cls(
@@ -283,19 +283,19 @@ def _main() -> int:
 
     Connects to the first firewall listed in ``inventory.yaml``.
     """
-    from .inventory import load_inventory
+    from .inventory import Inventory
 
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
 
     try:
-        entries = load_inventory()
-        if not entries:
+        entry = next(iter(Inventory.load()), None)
+        if entry is None:
             logger.error("inventory.yaml is empty")
             return 1
 
-        with FortiGateClient.from_entry(entries[0]) as fg:
+        with FortiGateClient.from_entry(entry) as fg:
             status = fg.get("monitor/system/status")
             if not isinstance(status, dict):
                 raise FortiGateAPIError(f"unexpected status response: {status!r}")

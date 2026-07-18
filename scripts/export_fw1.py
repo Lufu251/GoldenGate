@@ -21,9 +21,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fortigate.api.client import FortiGateClient
-from fortigate.api.inventory import get_entry
+from fortigate.api.inventory import Inventory
 from fortigate.config.exporter import export_sections
-from fortigate.config.sections import load_sections
+from fortigate.config.sections import Sections
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +38,10 @@ def main() -> int:
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
 
-    entry = get_entry(HOST_NAME)
-    sections = load_sections(SECTIONS_FILE)
+    entry = Inventory.load().get(HOST_NAME)
+    sections = Sections.load(SECTIONS_FILE)
     with FortiGateClient.from_entry(entry) as fg:
-        result = export_sections(
-            fg,
-            sections.vdom_paths,
-            OUTPUT_DIR,
-            HOST_NAME,
-            global_paths=sections.global_paths,
-        )
+        result = export_sections(fg, sections, OUTPUT_DIR, HOST_NAME)
 
     for written in result.written:
         print(f"wrote  {written.vdom}/{written.path} -> {written.file_path}")
