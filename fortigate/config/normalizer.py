@@ -189,8 +189,25 @@ def normalize_value(value: Any) -> Any:
 
 
 def normalize_section(payload: Any) -> Any:
-    """Normalize one raw export file's contents, envelope and all."""
+    """Normalize one raw export file's contents, envelope and all.
+
+    An empty table normalizes to ``{}`` rather than ``[]``, so a section
+    keeps the same type whether or not the firewall happens to have any
+    rows in it. Only this function can make that call: at section level an
+    empty list is unambiguously an empty table, because a section that
+    isn't a table (``system/global``) comes back as a dict instead. Deeper
+    down, :func:`normalize_value` sees empty reference lists like
+    ``macaddr: []`` that must stay lists, and with no rows to infer from it
+    cannot tell the two apart.
+
+    Without this a VDOM with no policies yields ``firewall/policy: []``
+    while a populated one yields a mapping, and any consumer doing a keyed
+    lookup breaks on the empty VDOM -- which is exactly where a compliance
+    check has the most to say.
+    """
     results = payload.get("results") if isinstance(payload, dict) else payload
+    if isinstance(results, list) and not results:
+        return {}
     return normalize_value(results)
 
 
