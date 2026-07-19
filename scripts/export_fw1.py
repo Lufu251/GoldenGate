@@ -9,7 +9,8 @@ Which sections to fetch, and the scope each lives in, is declared in
 ``configuration/sections.yaml``.
 
 Writes JSON files under ``data/raw/fw1/<scope>/<section>.json``, where
-``<scope>`` is ``global`` or a VDOM name.
+``<scope>`` is ``global`` or a VDOM name. The host's directory is replaced
+on each run, so it never accumulates sections that are no longer declared.
 """
 
 from __future__ import annotations
@@ -25,12 +26,13 @@ from fortigate.api.inventory import Inventory
 from fortigate.config.exporter import export_sections
 from fortigate.config.sections import Sections
 
-logger = logging.getLogger(__name__)
-
 HOST_NAME = "fw1"
+# Everything is anchored to the repo, not to the working directory, so the
+# script behaves the same wherever it is invoked from.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = REPO_ROOT / "data" / "raw"
 SECTIONS_FILE = REPO_ROOT / "configuration" / "sections.yaml"
+INVENTORY_FILE = REPO_ROOT / "inventory.yaml"
 
 
 def main() -> int:
@@ -38,7 +40,7 @@ def main() -> int:
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
 
-    entry = Inventory.load().get(HOST_NAME)
+    entry = Inventory.load(INVENTORY_FILE).get(HOST_NAME)
     sections = Sections.load(SECTIONS_FILE)
     with FortiGateClient.from_entry(entry) as fg:
         result = export_sections(fg, sections, OUTPUT_DIR, HOST_NAME)

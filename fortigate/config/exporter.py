@@ -19,11 +19,16 @@ business, and :func:`build_export_plan` is where it happens.
 
 A single section failing to fetch (e.g. unsupported on this model/version)
 does not abort the rest of the export -- see :func:`export_sections`.
+
+An export replaces a host's output directory wholesale rather than merging
+into it, so sections that are no longer declared do not linger -- see
+:func:`clear_host_dir`.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple
@@ -41,6 +46,7 @@ __all__ = [
     "fetch_section",
     "section_file_path",
     "write_section",
+    "clear_host_dir",
     "export_sections",
 ]
 
@@ -151,6 +157,24 @@ def write_section(file_path: Path, data: Any) -> None:
     file_path.write_text(json.dumps(data, indent=2))
 
 
+def clear_host_dir(output_dir: Path, host_name: str) -> None:
+    """Delete a host's export directory, if it exists.
+
+    The export only ever writes the sections it is asked for, so without
+    this a section dropped from the declaration -- or a VDOM deleted from
+    the appliance -- would leave its JSON behind forever, and
+    :mod:`fortigate.config.normalizer` reads whatever is on disk. Stale
+    config would keep showing up in the normalized output indefinitely.
+
+    Only ever called once the appliance has answered (see
+    :func:`export_sections`), so an unreachable firewall cannot destroy a
+    good export.
+    """
+    host_dir = Path(output_dir) / host_name
+    if host_dir.is_dir():
+        shutil.rmtree(host_dir)
+
+
 def export_sections(
     client: FortiGateClient,
     sections: Iterable[Section],
@@ -166,8 +190,15 @@ def export_sections(
     A section failing to fetch is recorded in the returned
     :class:`ExportResult` rather than raising -- the rest of the export
     still proceeds.
+
+    The host's existing export directory is deleted first, so the result is
+    exactly what was declared and fetched on this run rather than an
+    accumulation of every section ever exported. VDOM discovery happens
+    before the delete so an unreachable appliance leaves the previous
+    export intact.
     """
     vdoms = discover_vdoms(client)
+    clear_host_dir(Path(output_dir), host_name)
     plan = build_export_plan(vdoms, sections)
 
     written: List[WrittenSection] = []
