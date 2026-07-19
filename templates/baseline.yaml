@@ -1,0 +1,52 @@
+# Desired-state baseline, keyed by cmdb path.
+#
+# Matching is subset: everything declared here must be present and
+# correct on the firewall, and anything the firewall has that is not
+# declared here is ignored. So this file lists what an operator actually
+# decided, not the couple of hundred settings that came with the box.
+#
+# Values may be literals or Jinja2 placeholders filled from
+# vars/<host>.yaml. The file is rendered as *text* before it is parsed as
+# YAML, which keeps Jinja2's loop and conditional blocks available -- and
+# means the whole file is template text, comments included, so a literal
+# Jinja2 tag written here is still parsed as one.
+#
+# It also means quoting is your job. Leave a placeholder unquoted and YAML type
+# inference applies to whatever it rendered to: a value of `on` or `no`
+# becomes a bool, which no FortiOS value can ever match. The checker
+# raises on that rather than reporting a FAIL you cannot fix.
+#
+# Paths that live in the appliance's global scope are checked once;
+# everything else is checked in every VDOM, so a vdom-scoped entry here
+# is a fleet-wide assertion by construction.
+
+system/global:
+  hostname: "{{ hostname }}"
+  timezone: "{{ timezone }}"
+  # Unquoted on purpose: an int renders here, and scalars compare as
+  # strings on both sides anyway.
+  admintimeout: {{ admin_timeout }}
+  admin-lockout-threshold: 3
+  admin-concurrent: enable
+
+system/ntp:
+  ntpsync: enable
+  type: custom
+  # A nested table, keyed by id exactly as a top-level table is keyed by
+  # its mkey. Only the fields named here are asserted -- the other six on
+  # the row are left alone.
+  ntpserver:
+    1:
+      server: "{{ ntp_server }}"
+      authentication: disable
+
+firewall/address:
+  all:
+    subnet: 0.0.0.0 0.0.0.0
+    allow-routing: disable
+
+firewall/policy:
+  4:
+    action: accept
+    logtraffic: all
+    srcintf: [wan1]

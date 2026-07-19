@@ -1,0 +1,9 @@
+# Template variables for fw1. One flat mapping of name -> value.
+#
+# Tracked in git: there are no secrets here. Credentials live in the
+# gitignored inventory.yaml, which stage 1 reads and this stage never
+# touches.
+hostname: fw1
+timezone: Europe/Zurich
+admin_timeout: 15
+ntp_server: ch.pool.ntp.org

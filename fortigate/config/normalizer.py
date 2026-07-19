@@ -100,6 +100,25 @@ class NormalizedHost:
         mapping["vdoms"] = self.vdoms
         return mapping
 
+    @classmethod
+    def from_mapping(cls, mapping: Dict[str, Any]) -> "NormalizedHost":
+        """Rebuild a host from the mapping :meth:`to_mapping` produced.
+
+        Lives next to its inverse deliberately. ``to_mapping`` names the
+        document's keys (``global``, ``vdoms``) as literals; a consumer
+        reading the file back -- the compliance checker -- would otherwise
+        hold a second copy of that schema and be free to drift from it.
+        With both halves here, consumers touch :attr:`global_config` and
+        :attr:`vdoms` and never index the document by key name.
+        """
+        return cls(
+            host=mapping["host"],
+            facts=HostFacts(**{name: mapping.get(name) for name in FACT_FIELDS}),
+            # `global` is omitted entirely for a host with nothing global.
+            global_config=mapping.get("global") or {},
+            vdoms=mapping.get("vdoms") or {},
+        )
+
 
 def section_path_from_filename(filename: str) -> str:
     """Recover the cmdb path a raw export file was written from.

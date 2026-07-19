@@ -18,8 +18,9 @@ appliance rather than per-VDOM, so it is exported once and normalized
 into a top-level `global:` key that is a *sibling* of `vdoms:`, not an
 entry inside it.
 
-Stage 1 (`config/exporter`) and stage 2 (`config/normalizer`) are
-implemented. Stage 3 is still the plan below.
+All three stages are implemented. The stage 3 sections below are kept as
+written: they are the reasoning behind `fortigate/compliance/checker.py`,
+not a to-do list.
 
 The package is split by responsibility: `fortigate/api/` talks to the
 appliance, `fortigate/config/` fetches and reshapes what it returns.
@@ -123,7 +124,13 @@ human-readable for review? Round-trip raises the stakes on ordering.
 
 ---
 
-## Stage 3: compliance checker -- NOT YET IMPLEMENTED
+## Stage 3: compliance checker -- IMPLEMENTED
+
+One thing the plan did not anticipate, learned on first run: because the
+template is rendered as *text*, the whole file is template source --
+**YAML comments included**. A literal Jinja2 tag written in a comment is
+still parsed as a tag, and a lone `{% for %}` in prose is a syntax error
+that fails the render. Documented in `templates/baseline.yaml` itself.
 
 ### New files
 
