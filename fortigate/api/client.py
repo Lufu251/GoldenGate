@@ -322,10 +322,7 @@ def _main() -> int:
         logger.error("connection failed: %s", exc)
         return 1
 
-    print(
-        f"Connected to FortiGate '{hostname}' "
-        f"(inventory name: '{entries[0].name}')"
-    )
+    print(f"Connected to FortiGate '{hostname}' (inventory name: '{entry.name}')")
     print(f"  hardware: {hardware}")
     print(f"  firmware: {firmware}")
     print(f"  serial:   {serial}")

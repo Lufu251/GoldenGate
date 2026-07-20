@@ -27,12 +27,12 @@ OUTPUT_DIR = REPO_ROOT / "data" / "normal"
 
 
 def main() -> int:
-    host = normalize_host(RAW_DIR, HOST_NAME)
+    normalized_host = normalize_host(RAW_DIR, HOST_NAME)
 
     # Nothing on disk normalizes to an empty-but-valid host, which would
     # overwrite a good fw1.yaml with a file claiming the firewall has no
     # config at all. Bail out instead of writing it.
-    if not host.vdoms and not host.global_config:
+    if not normalized_host.vdoms and not normalized_host.global_config:
         print(
             f"no raw export found under {RAW_DIR / HOST_NAME}; "
             f"run scripts/export_fw1.py first",
@@ -41,16 +41,16 @@ def main() -> int:
         return 1
 
     file_path = host_file_path(OUTPUT_DIR, HOST_NAME)
-    write_normalized(file_path, host)
+    write_normalized(file_path, normalized_host)
 
-    sections = len(host.global_config) + sum(
-        len(sections) for sections in host.vdoms.values()
+    sections = len(normalized_host.global_config) + sum(
+        len(sections) for sections in normalized_host.vdoms.values()
     )
     print(f"wrote {file_path}")
     print(
-        f"{len(host.vdoms)} vdom(s) + global, {sections} section(s)"
-        if host.global_config
-        else f"{len(host.vdoms)} vdom(s), {sections} section(s)"
+        f"{len(normalized_host.vdoms)} vdom(s) + global, {sections} section(s)"
+        if normalized_host.global_config
+        else f"{len(normalized_host.vdoms)} vdom(s), {sections} section(s)"
     )
     return 0
 
