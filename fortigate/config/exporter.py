@@ -1,11 +1,10 @@
-"""Fetch FortiGate cmdb config sections and write them out as JSON.
+"""Fetch FortiGate cmdb config sections and return them.
 
 Built on top of :class:`fortigate.api.client.FortiGateClient`: given
 :class:`~fortigate.config.sections.Section` values (a cmdb path such as
 ``"cmdb/firewall/policy"`` plus the scope it lives in), this discovers every
-VDOM on the appliance, fetches each path in the scope it actually lives in,
-and writes the full API response envelope as pretty-printed JSON under an
-output directory.
+VDOM on the appliance and fetches each path in the scope it actually lives
+in.
 
 In multi-VDOM mode a FortiGate splits its config into two scopes. Most
 tables (``firewall/*``, ``router/*``, ``system/settings``) are per-VDOM,
@@ -20,74 +19,62 @@ business, and :func:`build_export_plan` is where it happens.
 A single section failing to fetch (e.g. unsupported on this model/version)
 does not abort the rest of the export -- see :func:`export_sections`.
 
-An export replaces a host's output directory wholesale rather than merging
-into it, so sections that are no longer declared do not linger -- see
-:func:`clear_host_dir`.
+Nothing here touches the filesystem. Where the fetched data lands, and
+what naming it lands under, is the caller's decision. That also settles
+*when* a previous export may be destroyed: there is nothing to write until
+:func:`export_sections` has returned, so an unreachable appliance cannot
+cost you the export you already had.
 """
 
 from __future__ import annotations
 
-import json
-import shutil
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Tuple, Union
 
 from ..api.client import FortiGateAPIError, FortiGateClient
 from .sections import GLOBAL_SCOPE, VDOM_SCOPE, Section
 
 __all__ = [
-    "SectionFetchResult",
-    "WrittenSection",
+    "FetchedSection",
     "FailedSection",
+    "SectionResult",
     "ExportResult",
     "discover_vdoms",
     "build_export_plan",
     "fetch_section",
-    "section_file_path",
-    "write_section",
-    "clear_host_dir",
     "export_sections",
 ]
 
 
-@dataclass
-class SectionFetchResult:
-    """The outcome of one :func:`fetch_section` call."""
-
-    vdom: str
-    path: str
-    data: Any = None
-    error: Optional[str] = None
-
-    @property
-    def success(self) -> bool:
-        return self.error is None
-
-
 @dataclass(frozen=True)
-class WrittenSection:
-    """A section that was successfully fetched and written to disk."""
+class FetchedSection:
+    """A section the appliance returned."""
 
     vdom: str
     path: str
-    file_path: Path
+    data: Any
 
 
 @dataclass(frozen=True)
 class FailedSection:
-    """A section that failed to fetch."""
+    """A section that could not be fetched."""
 
     vdom: str
     path: str
     error: str
 
 
+#: The outcome of one :func:`fetch_section` call. Two types rather than one
+#: carrying an optional ``data`` and an optional ``error``, so a section
+#: that was never fetched cannot be constructed holding data.
+SectionResult = Union[FetchedSection, FailedSection]
+
+
 @dataclass
 class ExportResult:
     """Summary of an :func:`export_sections` run."""
 
-    written: List[WrittenSection]
+    fetched: List[FetchedSection]
     failures: List[FailedSection]
 
 
@@ -119,14 +106,14 @@ def build_export_plan(
     return plan
 
 
-def fetch_section(client: FortiGateClient, vdom: str, path: str) -> SectionFetchResult:
+def fetch_section(client: FortiGateClient, vdom: str, path: str) -> SectionResult:
     """Fetch one cmdb path in one scope, never raising.
 
     ``vdom`` is either a real VDOM name or :data:`GLOBAL_SCOPE`, in which
     case the path is read from the global scope instead.
 
     :raises: never -- a :class:`~fortigate.api.client.FortiGateAPIError` is
-        caught and returned as ``SectionFetchResult.error`` instead.
+        caught and returned as a :class:`FailedSection` instead.
     """
     try:
         if vdom == GLOBAL_SCOPE:
@@ -134,54 +121,15 @@ def fetch_section(client: FortiGateClient, vdom: str, path: str) -> SectionFetch
         else:
             data = client.get(path, vdom=vdom)
     except FortiGateAPIError as exc:
-        return SectionFetchResult(vdom=vdom, path=path, error=str(exc))
-    return SectionFetchResult(vdom=vdom, path=path, data=data)
-
-
-def section_file_path(output_dir: Path, host_name: str, vdom: str, path: str) -> Path:
-    """Compute where a fetched section should be written.
-
-    Example: ``section_file_path(Path("data/raw"), "fw1", "root",
-    "cmdb/firewall/address")`` -> ``data/raw/fw1/root/cmdb-firewall-address.json``.
-
-    Global sections land in a sibling ``global/`` directory, since
-    :data:`GLOBAL_SCOPE` is passed as ``vdom``.
-    """
-    filename = path.strip("/").replace("/", "-") + ".json"
-    return Path(output_dir) / host_name / vdom / filename
-
-
-def write_section(file_path: Path, data: Any) -> None:
-    """Write the full API response envelope to ``file_path`` as pretty JSON."""
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(json.dumps(data, indent=2))
-
-
-def clear_host_dir(output_dir: Path, host_name: str) -> None:
-    """Delete a host's export directory, if it exists.
-
-    The export only ever writes the sections it is asked for, so without
-    this a section dropped from the declaration -- or a VDOM deleted from
-    the appliance -- would leave its JSON behind forever, and
-    :mod:`fortigate.config.normalizer` reads whatever is on disk. Stale
-    config would keep showing up in the normalized output indefinitely.
-
-    Only ever called once the appliance has answered (see
-    :func:`export_sections`), so an unreachable firewall cannot destroy a
-    good export.
-    """
-    host_dir = Path(output_dir) / host_name
-    if host_dir.is_dir():
-        shutil.rmtree(host_dir)
+        return FailedSection(vdom=vdom, path=path, error=str(exc))
+    return FetchedSection(vdom=vdom, path=path, data=data)
 
 
 def export_sections(
     client: FortiGateClient,
     sections: Iterable[Section],
-    output_dir: Path,
-    host_name: str,
 ) -> ExportResult:
-    """Fetch every section in its own scope and write each result to disk.
+    """Fetch every section in its own scope and return what came back.
 
     Sections scoped to :data:`VDOM_SCOPE` are fetched once per discovered
     VDOM; those scoped to :data:`GLOBAL_SCOPE` are fetched once from the
@@ -189,27 +137,19 @@ def export_sections(
 
     A section failing to fetch is recorded in the returned
     :class:`ExportResult` rather than raising -- the rest of the export
-    still proceeds.
-
-    The host's existing export directory is deleted first, so the result is
-    exactly what was declared and fetched on this run rather than an
-    accumulation of every section ever exported. VDOM discovery happens
-    before the delete so an unreachable appliance leaves the previous
-    export intact.
+    still proceeds. VDOM discovery is not covered by that: failing to reach
+    the appliance at all raises, because there is no partial result to
+    report and the caller, not this function, decides whether one dead
+    firewall stops a fleet.
     """
-    vdoms = discover_vdoms(client)
-    clear_host_dir(Path(output_dir), host_name)
-    plan = build_export_plan(vdoms, sections)
-
-    written: List[WrittenSection] = []
+    fetched: List[FetchedSection] = []
     failures: List[FailedSection] = []
-    for vdom, path in plan:
-        result = fetch_section(client, vdom, path)
-        if result.success:
-            file_path = section_file_path(Path(output_dir), host_name, vdom, path)
-            write_section(file_path, result.data)
-            written.append(WrittenSection(vdom=vdom, path=path, file_path=file_path))
-        else:
-            failures.append(FailedSection(vdom=vdom, path=path, error=result.error))
 
-    return ExportResult(written=written, failures=failures)
+    for vdom, path in build_export_plan(discover_vdoms(client), sections):
+        result = fetch_section(client, vdom, path)
+        if isinstance(result, FetchedSection):
+            fetched.append(result)
+        else:
+            failures.append(result)
+
+    return ExportResult(fetched=fetched, failures=failures)

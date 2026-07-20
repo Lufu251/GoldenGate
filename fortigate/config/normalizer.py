@@ -45,7 +45,7 @@ from .sections import GLOBAL_SCOPE
 __all__ = [
     "HostFacts",
     "NormalizedHost",
-    "section_path_from_filename",
+    "section_path_from_file",
     "extract_facts",
     "infer_mkey",
     "normalize_value",
@@ -120,13 +120,20 @@ class NormalizedHost:
         )
 
 
-def section_path_from_filename(filename: str) -> str:
+def section_path_from_file(scope_dir: Path, file_path: Path) -> str:
     """Recover the cmdb path a raw export file was written from.
 
-    Example: ``"cmdb-firewall-policy.json"`` -> ``"firewall/policy"``. The
-    ``cmdb`` prefix is dropped since every exported section shares it.
+    Example: ``<scope_dir>/cmdb/firewall/policy.json`` ->
+    ``"firewall/policy"``. The ``cmdb`` prefix is dropped since every
+    exported section shares it.
+
+    The path is recovered from the directory structure rather than from a
+    flattened filename, because flattening is not reversible: cmdb path
+    segments contain ``-`` themselves, so ``cmdb-system-dns-database.json``
+    reads back as ``system/dns/database``. Whatever writes the export has
+    to lay the files out this way -- see ``scripts/export_fw1.py``.
     """
-    parts = Path(filename).stem.split("-")
+    parts = file_path.relative_to(scope_dir).with_suffix("").parts
     if parts and parts[0] == "cmdb":
         parts = parts[1:]
     return "/".join(parts)
@@ -253,11 +260,13 @@ def normalize_host(raw_dir: Path, host_name: str) -> NormalizedHost:
 
     for scope_dir in discover_scope_dirs(host_dir):
         sections: Dict[str, Any] = {}
-        for json_file in sorted(scope_dir.glob("*.json")):
+        # Recursive: a section's cmdb path is its directory structure, so
+        # the files sit one level per path segment rather than flat.
+        for json_file in sorted(scope_dir.rglob("*.json")):
             payload = json.loads(json_file.read_text())
             if result.facts == HostFacts():
                 result.facts = extract_facts(payload)
-            sections[section_path_from_filename(json_file.name)] = normalize_section(
+            sections[section_path_from_file(scope_dir, json_file)] = normalize_section(
                 payload
             )
         if scope_dir.name == GLOBAL_SCOPE:
