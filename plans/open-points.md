@@ -1,17 +1,19 @@
 # Open points
 
-Everything the three implemented stages left unfinished, in one place. Carried
-out of `plans/compliance-checker.md` when that plan was retired: stages 1--3 are
-built and described in `README.md`, so what remained of it was this.
+Everything the implemented stages left unfinished, in one place. Carried out of
+`plans/compliance-checker.md` when that plan was retired: the stages themselves
+are built and described in `README.md`, so what remained of it was this.
 
 Nothing here is committed to. Each item records the reasoning that produced it
 so whoever picks it up does not re-derive it, and several are deliberately
 *not* built yet under DECISIONS line 6 (build an abstraction when a caller
 exists).
 
-`plans/template-renderer.md` is the one plan already written against this list;
-it owns template rendering, validation, merging, and per-host selection. Items
-below that touch it say so rather than restating it.
+`plans/template-renderer.md` was the one plan written against this list, and is
+retired the same way: rendering, validation, and merging are built and described
+in `README.md` as stages 3 and 4, so what remained of it -- per-host template
+selection, override semantics, and where `template.py` eventually lives -- was
+folded into §4 and §8 below.
 
 ---
 
@@ -84,19 +86,54 @@ people to ignore red.
 
 This policy lives in the fleet script only; the library has no notion of it.
 
-The **host-to-template mapping** the fleet loop needs is `plans/template-renderer.md`'s
-`templates:` field on the inventory entry. It was deliberately not built while
-each script names its one host, because it would have had no caller.
+The **host-to-template mapping** the fleet loop needs is the `templates:` field
+on the inventory entry, specified in §4. It was deliberately not built while each
+script names its one host, because it would have had no caller.
 
 ## 4. Template composition and selection
 
-Owned by `plans/template-renderer.md` (`merge`, `validate`, the inventory
-`templates:` field). The checker takes **one rendered template and one
-normalized host** and needs no change for any of it -- the rendered template is
-already a parameter.
+`merge` and `validate` are built, in `fortigate/compliance/template.py`; the
+inventory `templates:` field is not, and is the remaining piece. The checker
+takes **one desired-state document and one normalized host**, both as
+parameters: `check_template(template, host)`. Composition needed no change to
+what it compares -- the document was already a parameter -- but its other two
+arguments became one `NormalizedHost`, so the caller loads both sides.
 
-What that plan does not record, and should not be lost: heterogeneity is **two
-axes**, and solving both with one mechanism is the trap to avoid.
+### Per-host selection -- deferred, not dropped
+
+Which templates apply to which firewall is a constant in `render_fw1.py`, and
+only the *source* of that list changes when this lands. The shape is settled, so
+it is not re-derived:
+
+- `FirewallEntry` grows `templates: List[str]`, resolved against `templates/`,
+  defaulting to empty.
+- **Empty is not "check nothing".** A host with no templates has never had a
+  policy chosen for it, which differs from a host that passed its checks
+  (DECISIONS line 15). It needs no new code: render writes no files, merge finds
+  none and refuses, check refuses for lack of a desired file. That chain already
+  works today -- it is what an empty `data/rendered/<host>/` does.
+- `fortigate/api/inventory.py` moves to `fortigate/inventory.py`. Not tidying:
+  `templates:` is a compliance fact, and leaving it in `api/` puts a field about
+  a stage that never connects to an appliance inside the package that exists to
+  connect to one (DECISIONS lines 6, 11). Touches `fortigate/config/exporter.py`
+  and `scripts/export_fw1.py`.
+
+### Override semantics
+
+`merge` raises on every disagreement, so a role cannot deliberately override a
+baseline default -- a baseline can only hold the intersection of every role that
+uses it. Whether that is a problem is **unanswerable today**, with one baseline
+and one role that do not conflict. Revisit when a real conflict appears; the
+answer would be explicit override syntax, never last-wins, because last-wins
+makes the merge order load-bearing and the order is a directory glob.
+
+Template inheritance and conditionals beyond what Jinja2 already gives are out
+for the same reason: `merge` composes whole documents and deliberately does not
+introduce a layering language.
+
+### Two axes of heterogeneity
+
+Solving both with one mechanism is the trap to avoid.
 
 - **Model capability** -- *can* this box have this path? A path unsupported on a
   model fails to fetch, is recorded in `FailedSection`, is never written, and is
@@ -140,14 +177,22 @@ is the upgrade** -- not making UNKNOWN red.
 
 ## 8. Where type coercion lives
 
-`comparable` in `checker.py` is a second place that knows the API lies about
+`coerce` in `template.py` is a second place that knows the API lies about
 types, which sits slightly against DECISIONS line 9 (canonical form before
 comparison). It stays there because the normalizer cannot fix it without data
 loss: there is no coercion that repairs `'3'` and preserves `'000000'`.
 
-It is kept in one named function on purpose. **If config generation (§2) ever
-needs the same coercion, that is the signal to move it down into the
-normalizer** -- a second caller is the trigger, per DECISIONS line 6.
+It is kept in one named function on purpose. It moved out of `checker.py` when
+the renderer landed, because `merge` needs the same notion of "same value" --
+two templates asserting one list in different orders agree for exactly the
+reason the checker considers them equal, and two copies of that rule could
+disagree. **If config generation (§2) ever needs the same coercion, that is the
+signal to move it down into the normalizer** -- a second caller outside
+compliance is the trigger, per DECISIONS line 6.
+
+The same trigger governs where `template.py` lives. It sits under `compliance/`
+while compliance is its only consumer; it moves to package level the day
+something that is not a checker renders a template.
 
 ## 9. No tests
 
@@ -158,12 +203,13 @@ not checked by anything.
 
 The pipeline was built to make this cheap: each stage reads a fixed on-disk input
 and writes a deterministic output, so fixtures are just small files. The
-normalizer and checker are pure and need no appliance.
+normalizer, renderer, and checker are pure and need no appliance.
 
 Worth doing before the fleet script (§3), which multiplies the blast radius of
-any regression. `plans/template-renderer.md` also notes that `render_template`
-currently fuses the file read to the render, forcing a fixture file into every
-render test -- splitting that out is a prerequisite.
+any regression. The prerequisite noted here -- that the render fused the file
+read to itself, forcing a fixture file into every render test -- is done:
+`load_template` reads and `render(text, variables)` computes, and
+`check_template(template, host)` likewise takes two in-memory values.
 
 ---
 

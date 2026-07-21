@@ -1,10 +1,12 @@
-"""Check a normalized firewall config against a desired-state template.
+"""Check a normalized firewall config against a desired-state document.
 
-The checker never touches an appliance. It reads
-``data/normal/<host>.yaml`` -- the output of
-:mod:`fortigate.config.normalizer` -- and compares it against an
-already-rendered template, producing a :class:`ComplianceResult` that
-:func:`write_diff` renders to ``data/diff/<host>.yaml``.
+The checker never touches an appliance, and never renders anything. It
+compares two in-memory documents: ``data/normal/<host>.yaml`` -- the
+output of :mod:`fortigate.config.normalizer` -- against
+``data/desired/<host>.yaml`` -- the output of
+:mod:`fortigate.compliance.template` -- producing a
+:class:`ComplianceResult` that :func:`write_diff` renders to
+``data/diff/<host>.yaml``.
 
 Matching is **subset**: everything the template declares must be present
 and correct, while objects and fields the firewall has but the template
@@ -21,35 +23,33 @@ UNKNOWN (:class:`UnknownPath`)
     the path was never exported, so nothing was checked. Kept apart from
     FAIL so a broken *export* does not read as a broken *firewall*.
 
-A template bug is none of those. An undefined Jinja2 variable, a bool
-where FortiOS has only ``enable``/``disable`` strings, and a scalar
-asserted against a mapping are all statements about the template, not
-about the firewall, so they raise rather than being written into a diff
-that claims to describe the firewall's compliance.
+A template bug is none of those, and most of them are caught before the
+checker runs -- :func:`~fortigate.compliance.template.validate` rejects a
+whole document up front. One kind can only be recognized here: a template
+expecting a mapping where the firewall holds a scalar. Seeing it needs
+the firewall's value, so it is detected at comparison time even though it
+is a statement about the template, and it raises rather than being
+written into a diff that claims to describe the firewall's compliance.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import yaml
-from jinja2 import Environment, StrictUndefined
 
 from ..config.normalizer import NormalizedHost
+from .template import TemplateError, coerce
 
 __all__ = [
     "GLOBAL_VDOM",
-    "TemplateError",
     "Violation",
     "MissingKey",
     "UnknownPath",
     "ComplianceResult",
-    "load_vars",
-    "render_template",
     "load_normalized",
-    "comparable",
     "check_object",
     "check_section",
     "check_template",
@@ -67,15 +67,6 @@ GLOBAL_VDOM = "global"
 #: Marks a key that is absent from the firewall, distinguishing it from a
 #: key genuinely set to ``None``.
 _ABSENT = object()
-
-
-class TemplateError(Exception):
-    """The template asserts something no firewall state could satisfy.
-
-    Raised rather than reported: the fault is in a git-tracked, reviewed
-    file, and one bad line aborting that host's check is better than a
-    finding that reads as a firewall problem.
-    """
 
 
 @dataclass(frozen=True)
@@ -219,36 +210,13 @@ class ComplianceResult:
         return node
 
 
-def load_vars(path: Path) -> Dict[str, Any]:
-    """Load one firewall's template variables."""
-    return yaml.safe_load(Path(path).read_text()) or {}
-
-
-def render_template(path: Path, variables: Dict[str, Any]) -> Dict[str, Any]:
-    """Render a template file with ``variables`` and parse the result.
-
-    The *text* is rendered and then parsed, rather than the file being
-    parsed and each string leaf rendered. That keeps ``{% for %}`` and
-    ``{% if %}`` available -- generating one address object per VLAN is
-    exactly what a parameterised template is for -- at the cost of making
-    quoting the author's job. An unquoted placeholder inherits YAML type
-    inference, so a variable holding ``on`` or ``no`` becomes a bool;
-    :func:`comparable` rejects those rather than letting ``'True'`` be
-    compared against a FortiOS ``enable``.
-
-    ``StrictUndefined`` is not optional. Jinja2's default renders an
-    undefined variable as the empty string, which would silently assert
-    the wrong expected value and report a FAIL against a value nobody
-    wrote.
-    """
-    path = Path(path)
-    environment = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
-    rendered = environment.from_string(path.read_text()).render(**variables)
-    return yaml.safe_load(rendered) or {}
-
-
-def load_normalized(normal_dir: Path, host_name: str) -> NormalizedHost:
+def load_normalized(file_path: Path) -> NormalizedHost:
     """Load one firewall's normalized config.
+
+    Takes a complete path, which
+    :func:`~fortigate.config.normalizer.host_file_path` composes: the
+    rule for naming that file is already owned there, and re-deriving it
+    from a directory and a host name would be a second copy of it.
 
     Raises :class:`FileNotFoundError` if the host was never normalized.
     Unlike :func:`~fortigate.config.normalizer.normalize_host`, which
@@ -258,8 +226,7 @@ def load_normalized(normal_dir: Path, host_name: str) -> NormalizedHost:
     findings, and write a clean-looking diff for a firewall nobody ever
     checked.
     """
-    file_path = Path(normal_dir) / f"{host_name}.yaml"
-    return NormalizedHost.from_mapping(yaml.safe_load(file_path.read_text()))
+    return NormalizedHost.from_mapping(yaml.safe_load(Path(file_path).read_text()))
 
 
 def _where(vdom: str, path: str, object_key: Optional[str], field: Tuple[str, ...]) -> str:
@@ -269,46 +236,6 @@ def _where(vdom: str, path: str, object_key: Optional[str], field: Tuple[str, ..
         parts.append(object_key)
     parts.extend(field)
     return " / ".join(parts)
-
-
-def comparable(value: Any, where: str) -> Union[str, FrozenSet[str]]:
-    """Coerce one side of a scalar comparison, or reject it.
-
-    Scalars compare as strings on both sides because the API is
-    inconsistent about types within a single file: ``admintimeout`` comes
-    back as an int while ``purdue-level: '3'`` and ``session-ttl: '0'``
-    are strings. Coercing *numerically* instead would collapse
-    ``diffservcode-forward: '000000'`` to ``0`` and silently match a
-    template written as ``0``. ``str`` refuses that case loudly and the
-    template author quotes the value.
-
-    Lists compare as sets. After normalization every list is either empty
-    or a collapsed reference list (``srcintf: ['wan1']``,
-    ``service: ['HTTPS']``), and none of them are order-sensitive --
-    policy *evaluation* order is the order of the ``firewall/policy``
-    mapping itself, not of any field inside a policy.
-
-    Two values raise instead. A bool cannot have come from FortiOS, which
-    has no booleans anywhere -- it uses ``enable``/``disable`` strings --
-    so it can only be an unquoted placeholder that hit YAML type
-    inference. A mapping reaching a scalar comparison is a kind mismatch,
-    structurally impossible for any firewall state to satisfy. Both are
-    template bugs, and ``str``-ing them would produce a stringified dict
-    that reads as a firewall problem.
-    """
-    if isinstance(value, bool):
-        raise TemplateError(
-            f"{where}: {value!r} is a bool, which FortiOS never returns -- "
-            f"quote the value so it stays a string"
-        )
-    if isinstance(value, Mapping):
-        raise TemplateError(
-            f"{where}: a mapping cannot be compared against a scalar; "
-            f"the template and the firewall disagree about the shape here"
-        )
-    if isinstance(value, list):
-        return frozenset(comparable(item, where) for item in value)
-    return str(value)
 
 
 def _describe(value: Any) -> str:
@@ -375,7 +302,7 @@ def check_object(
             continue
 
         where = _where(vdom, path, object_key, here)
-        if comparable(expected_value, where) != comparable(actual_value, where):
+        if coerce(expected_value, where) != coerce(actual_value, where):
             findings.append(
                 Violation(
                     vdom,
@@ -437,10 +364,13 @@ def check_section(
     return findings
 
 
-def check_template(
-    template: Mapping, normal_dir: Path, host_name: str
-) -> ComplianceResult:
-    """Check one rendered template against one normalized firewall.
+def check_template(template: Mapping, host: NormalizedHost) -> ComplianceResult:
+    """Check one desired-state document against one normalized firewall.
+
+    Both sides are passed in, so this is a pure function of two in-memory
+    values: what to operate on is the caller's to load, and the host name
+    on the result comes from the loaded artifact rather than being
+    threaded alongside it.
 
     A vdom-scoped path is checked in **every** VDOM: that cross product is
     the semantics, the same shape as ``build_export_plan`` in the
@@ -455,7 +385,6 @@ def check_template(
     trusting a declared list. That needs no second input and cannot drift
     out of step with the file being checked.
     """
-    host = load_normalized(normal_dir, host_name)
     result = ComplianceResult(host=host.host)
 
     for path, expected in template.items():
